@@ -32,7 +32,44 @@ module Seq = struct
 
 end
 
+module JList = struct
+  type 'a t = 
+    | Zero 
+    | One of 'a 
+    | App of 'a t * 'a t 
 
+  let rec map f = function
+    | Zero -> Zero
+    | One x -> One(f x)
+    | App(xs, ys) -> App(map f xs, map f ys)
+
+  let nil = Zero
+  let one x = One x 
+  let cons x xs = App(One x, xs)
+  let app xs ys = App(xs, ys)
+
+  let rec flatten = function
+    | Zero -> Zero
+    | One xs -> xs
+    | App(xs, ys) -> App(flatten xs, flatten ys)
+
+    
+
+  let rec to_seq xs () = 
+    match xs with 
+    | Zero -> Seq.Nil 
+    | One x -> Seq.Cons(x, Seq.empty)
+    | App(ys, zs) -> Seq.concat [to_seq ys; to_seq zs] ()
+
+  let rec fold f init xs = 
+    Seq.fold_left (fun acc x -> f x acc) init (to_seq xs)
+
+  let rec iter f xs = 
+    Seq.iter f (to_seq xs)
+end
+
+
+           
 type var = string
 
 type sort  = Nat
@@ -64,7 +101,7 @@ module type Term = sig
   val into : t tm -> t
   val out : t -> t tm 
 
-  val predecessors : t -> t list
+  val predecessors : t -> t JList.t
 
   val compare : t -> t -> int
   val (=) : t -> t -> bool
@@ -114,9 +151,9 @@ module Tm : Term = struct
     | None -> let n = next() in
               Hashtbl.add h x n;
               Hashtbl.add h' n x;
-              Hashtbl.add parents n [];
+              Hashtbl.add parents n JList.nil;
               List.iter 
-               (fun n' -> Hashtbl.add parents n' (n :: Hashtbl.find parents n'))
+               (fun n' -> Hashtbl.add parents n' (JList.cons n (Hashtbl.find parents n')))
                (children x);
               n 
 
@@ -139,21 +176,23 @@ module Tm : Term = struct
   let (<=) = Stdlib.(<=)
 end
 
+
+
 module DisjointSet = struct
-  type t = {
-      value : Tm.t;
-      mutable parent : path; 
+  type 'a t = {
+      value : 'a;
+      mutable parent : 'a path; 
       mutable rank : int;
       id : int 
     }
-  and path = 
-    | Root of Tm.t list 
-    | Link of t 
+  and 'a path = 
+    | Root of 'a JList.t 
+    | Link of 'a t 
 
   let id = ref 0 
 
   let create tm = {value = tm; 
-                   parent = Root [tm]; 
+                   parent = Root (JList.one tm); 
                    rank = 0;
                    id = (incr id; !id)}
 
@@ -174,11 +213,11 @@ module DisjointSet = struct
     if not (t1 == t2) then
       (match compare t1.rank t2.rank with
        | -1 -> t1.parent <- Link t2;
-               t2.parent <- Root (ts1 @ ts2)
+               t2.parent <- Root (JList.app ts1 ts2)
        | 1  -> t2.parent <- Link t1;
-               t1.parent <- Root (ts1 @ ts2)
+               t1.parent <- Root (JList.app ts1 ts2)
        | 0  -> t1.parent <- Link t2;
-               t2.parent <- Root (ts1 @ ts2);
+               t2.parent <- Root (JList.app ts1 ts2);
                t2.rank <- t2.rank + 1
        | _ -> assert false)
 
@@ -201,7 +240,7 @@ module CongruenceClosure = struct
      sensible to avoid creating duplicate sets for repeated terms
      in  the stream*)
 
-  let classes ts = 
+  let classes (ts : Tm.t Seq.t) = 
     let i = Hashtbl.create 0 in 
     let insert t = 
       if Hashtbl.mem i t 
@@ -239,13 +278,13 @@ module CongruenceClosure = struct
         (* Find all the terms equivalent to t *)
         let ts = DisjointSet.equiv (Hashtbl.find i t) in 
         (* Find each term's predecessors *)
-        let tss = List.map Tm.predecessors ts in
-        List.flatten tss 
+        let tss = JList.map Tm.predecessors ts in
+        JList.flatten tss 
       in 
       let pred1 = preds t1 in
       let pred2 = preds t2 in 
-      List.iter (fun t1' -> 
-          List.iter (fun t2' -> 
+      JList.iter (fun t1' -> 
+          JList.iter (fun t2' -> 
               if not (equiv i t1' t2') && congruent i t1' t2' then
                 merge i (t1', t2')
               else
@@ -288,11 +327,15 @@ type pf =
   | Right of pf
   | Lam of var * pf
   | TLam of var * sort * pf
-  | App of pf * arg list 
+  | App of var * spine 
   | Pack of Tm.t * pf
   | Unpack of var * var * pf * pf 
   | Cases of pf * (pat * pf) list 
-and arg = L of pf | A of Tm.t
+and arg = 
+  | Tm of Tm.t 
+  | App of var * spine
+and spine = arg list 
+
 
 
 
